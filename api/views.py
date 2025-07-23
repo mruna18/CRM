@@ -9,6 +9,8 @@ from django.db.models import Q, F, Value
 from django.db.models.functions import Concat
 from django.core.paginator import Paginator, EmptyPage
 from django.contrib.auth.models import User
+from .models import Employee
+from .serializers import EmployeeSerializer
 
 
 # Create your views here.
@@ -129,12 +131,6 @@ class EmployeeListGet(APIView):
             })
         return Response({"data": list(employees.values()), "status": 200})
     
-
-# User GET Detail View
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from .models import Employee
-from .serializers import EmployeeSerializer
 
 class EmployeeDetailGet(APIView):
     def get(self, request, pk):
