@@ -29,4 +29,9 @@ urlpatterns = [
     path('leave/<int:id>/', GetLeaveRequestDetail.as_view(), name='get-leave'),
     path('update-leave/', UpdateLeaveRequest.as_view(), name='update-leave'),
     path('delete-leave/<int:id>/', DeleteLeaveRequest.as_view(), name='delete-leave'),
+
+    #log
+    path("logs/", LeaveLogListView.as_view(), name="leave-logs"),
+    path("summary-log/", LeaveSummaryLogListView.as_view(), name="leave-summary-log-list"),
 ]
+

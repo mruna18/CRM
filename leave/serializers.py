@@ -32,20 +32,51 @@ class LeaveBalanceSerializer(serializers.ModelSerializer):
         return f"{obj.employee.first_name} {obj.employee.last_name}" if obj.employee else ""
 
 # leave request
+# class LeaveRequestSerializer(serializers.ModelSerializer):
+#     employee_name = serializers.CharField(source='employee.name', read_only=True)
+#     leave_type_name = serializers.CharField(source='leave_type.name', read_only=True)
+#     status_name = serializers.CharField(source='status.name', read_only=True)
+
+#     class Meta:
+#         model = LeaveRequest
+#         fields = [
+#             'id',
+#             'employee', 'employee_name',
+#             'leave_type', 'leave_type_name',
+#             'status', 'status_name',
+#             'from_date', 'to_date', 'total_days',
+#             'is_half_day', 'reason', 'remarks_by_superior',
+#             'applied_at', 'updated_at',
+#             'deleted'
+#         ]
+
+
+
 class LeaveRequestSerializer(serializers.ModelSerializer):
-    employee_name = serializers.CharField(source='employee.name', read_only=True)
+    employee_name = serializers.CharField(source='employee.user.get_full_name', read_only=True)
     leave_type_name = serializers.CharField(source='leave_type.name', read_only=True)
     status_name = serializers.CharField(source='status.name', read_only=True)
+    approved_by_name = serializers.CharField(source='approved_by.user.get_full_name', read_only=True)
 
     class Meta:
         model = LeaveRequest
-        fields = [
-            'id',
-            'employee', 'employee_name',
-            'leave_type', 'leave_type_name',
-            'status', 'status_name',
-            'from_date', 'to_date', 'total_days',
-            'is_half_day', 'reason', 'remarks_by_superior',
-            'applied_at', 'updated_at',
-            'deleted'
-        ]
+        fields = '__all__'
+
+
+#! leave daily log
+class LeaveLogSerializer(serializers.ModelSerializer):
+    employee_name = serializers.CharField(source="employee.user.get_full_name", read_only=True)
+    leave_type_name = serializers.CharField(source="leave_type.name", read_only=True)
+
+    class Meta:
+        model = LeaveLog
+        fields = ["id", "leave_request", "employee", "employee_name", "leave_type", "leave_type_name", "date", "is_half_day", "created_at"]
+
+#!summary log
+class LeaveSummaryLogSerializer(serializers.ModelSerializer):
+    employee = serializers.StringRelatedField()
+    leave_type = serializers.StringRelatedField()
+
+    class Meta:
+        model = LeaveSummaryLog
+        fields = "__all__"

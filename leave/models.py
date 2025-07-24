@@ -74,3 +74,37 @@ class LeaveBalance(models.Model):
 
     def __str__(self):
         return f"{self.employee} - {self.leave_type} | {self.used}/{self.total_allocated}"
+
+#! daily log - for attendance / audit (internal)
+class LeaveLog(models.Model):
+    leave_request = models.ForeignKey(LeaveRequest, on_delete=models.CASCADE)
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE)
+    leave_type = models.ForeignKey(LeaveType, on_delete=models.SET_NULL, null=True)
+    date = models.DateField()
+    is_half_day = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "leave_log"
+        unique_together = ("employee", "date")
+
+    def __str__(self):
+        return f"{self.employee} - {self.date} ({'Half' if self.is_half_day else 'Full'})"
+    
+
+#! summary - dashboard
+class LeaveSummaryLog(models.Model):
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE)
+    leave_type = models.ForeignKey(LeaveType, on_delete=models.CASCADE)
+    from_date = models.DateField()
+    to_date = models.DateField()
+    is_half_day = models.BooleanField(default=False)
+    leave_request = models.ForeignKey(LeaveRequest, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "leave_summary"
+        unique_together = ("employee", "from_date", "to_date")
+
+    def __str__(self):
+        return f"{self.employee} - {self.leave_type.name} from {self.from_date} to {self.to_date} ({'Half Day' if self.is_half_day else 'Full Days'})"

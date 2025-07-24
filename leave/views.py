@@ -139,45 +139,50 @@ class LeaveBalanceForEmployee(APIView):
         serializer = LeaveBalanceSerializer(balances, many=True)
         return Response({"data": serializer.data, "status": 200})
     
+class CreateLeaveBalanceForEmployee(APIView):
+    def post(self, request):
+        employee_id = request.data.get("employee_id")
+
+        if not employee_id:
+            return Response({"error": "employee_id is required", "status": 400}, status=400)
+
+        try:
+            employee = Employee.objects.get(id=employee_id, deleted=False)
+        except Employee.DoesNotExist:
+            return Response({"error": "Employee not found", "status": 404}, status=404)
+
+        leave_types = LeaveType.objects.filter(deleted=False)
+        created_entries = []
+
+        for leave_type in leave_types:
+            balance, created = LeaveBalance.objects.get_or_create(
+                employee=employee,
+                leave_type=leave_type,
+                defaults={
+                    "total_allocated": leave_type.max_days_per_year or 0,
+                    "used": 0,
+                    "deleted": False
+                }
+            )
+            if created:
+                created_entries.append(f"{leave_type.name}")
+
+        if created_entries:
+            return Response({
+                "message": "Leave balances created",
+                "created_for_types": created_entries,
+                "status": 201
+            })
+        else:
+            return Response({
+                "message": "Leave balances already exist",
+                "status": 200
+            })
+    
 
 #! leave
 
-#creating the leave request
-# class CreateLeave(APIView):
-#     def post(self, request):
-#         data = request.data.copy()
-
-#         employee_id = data.get("employee")
-#         from_date = data.get("from_date")
-#         to_date = data.get("to_date")
-
-#         if not employee_id or not from_date or not to_date:
-#             return Response({"error": "employee, from_date, and to_date are required", "status": 400})
-
-#         # Check if employee exists
-#         try:
-#             employee = Employee.objects.get(id=employee_id, deleted=False)
-#         except Employee.DoesNotExist:
-#             return Response({"error": "Employee not found", "status": 404})
-
-#         # Calculate total leave days
-#         try:
-#             start = datetime.strptime(from_date, "%Y-%m-%d").date()
-#             end = datetime.strptime(to_date, "%Y-%m-%d").date()
-#             if end < start:
-#                 return Response({"error": "to_date cannot be before from_date", "status": 400})
-#             data["total_days"] = (end - start).days + 1
-#         except Exception as e:
-#             return Response({"error": f"Date error: {str(e)}", "status": 400})
-
-#         # Save leave
-#         serializer = LeaveSerializer(data=data)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response({"data": serializer.data, "status": 201})
-#         return Response({"error": serializer.errors, "status": 400})
-
-# Optional: Assume Saturday and Sunday as weekends
+#? Optional: Assume Saturday and Sunday as weekends
 WEEKENDS = [5, 6]  # Saturday=5, Sunday=6
 
 class CreateLeave(APIView):
@@ -289,71 +294,95 @@ class CreateLeave(APIView):
         return Response({"error": serializer.errors, "status": 400})
 
 
+#! leave request approval
 class ApproveLeaveRequest(APIView):
     def post(self, request):
         data = request.data
         leave_id = data.get("leave_id")
-        approver_id = data.get("approver_id")
-        action = data.get("action")  # "approve" or "reject"
+        status_id = data.get("status_id")  
         remarks = data.get("remarks", "")
 
-        if not all([leave_id, approver_id, action]):
-            return Response({"error": "leave_id, approver_id, and action are required", "status": 400})
+        if not leave_id or not status_id:
+            return Response({"error": "leave_id and status_id are required", "status": 400})
 
-        if action not in ["approve", "reject"]:
-            return Response({"error": "action must be 'approve' or 'reject'", "status": 400})
-
-        # Check if approver exists and has permission
+        # 1. Get approver from logged in user
         try:
-            approver = Employee.objects.get(id=approver_id, deleted=False)
+            approver = Employee.objects.get(user=request.user, deleted=False)
         except Employee.DoesNotExist:
             return Response({"error": "Approver not found", "status": 404})
 
-        # Check if approver has permission (HR, Admin, Manager)
-        if approver.role.name.lower() not in ["hr", "admin", "manager"]:
+        allowed_roles = ["hr", "admin", "manager"]
+        if not any(role in approver.role.name.lower() for role in allowed_roles):
             return Response({"error": "Unauthorized to approve leaves", "status": 403})
 
-        # Get leave request
+        # 2. Get LeaveRequest
         try:
             leave_request = LeaveRequest.objects.get(id=leave_id, deleted=False)
         except LeaveRequest.DoesNotExist:
             return Response({"error": "Leave request not found", "status": 404})
 
-        # Get appropriate status
+        # 3. Validate status
         try:
-            if action == "approve":
-                status = LeaveStatus.objects.get(name__iexact="approved", deleted=False)
-            else:
-                status = LeaveStatus.objects.get(name__iexact="rejected", deleted=False)
+            status = LeaveStatus.objects.get(id=status_id, deleted=False)
         except LeaveStatus.DoesNotExist:
-            # Create status if it doesn't exist
-            status = LeaveStatus.objects.create(name=action.title())
+            return Response({"error": "Invalid leave status", "status": 400})
 
-        # Update leave request
+        # 4. Update leave request
         leave_request.status = status
         leave_request.approved_by = approver
         leave_request.remarks_by_superior = remarks
         leave_request.save()
 
-        # If approved, update leave balance
-        if action == "approve":
+        # 5. If approved, update balance and create logs
+        if status.name.lower() == "approved":
             try:
                 balance = LeaveBalance.objects.get(
                     employee=leave_request.employee,
                     leave_type=leave_request.leave_type,
                     deleted=False
                 )
-                balance.used += float(leave_request.total_days)
+                balance.used += float(leave_request.total_days or 0)
                 balance.save()
+
+                # Log each valid leave day (excluding weekends)
+                current_date = leave_request.from_date
+                while current_date <= leave_request.to_date:
+                    if current_date.weekday() not in WEEKENDS:
+                        LeaveLog.objects.get_or_create(
+                            employee=leave_request.employee,
+                            leave_type=leave_request.leave_type,
+                            date=current_date,
+                            leave_request=leave_request,
+                            defaults={
+                                "is_half_day": leave_request.is_half_day
+                            }
+                        )
+                    current_date += timedelta(days=1)
+
+                # Log leave summary once per range
+                LeaveSummaryLog.objects.get_or_create(
+                    employee=leave_request.employee,
+                    leave_type=leave_request.leave_type,
+                    from_date=leave_request.from_date,
+                    to_date=leave_request.to_date,
+                    leave_request=leave_request,
+                    defaults={
+                        "is_half_day": leave_request.is_half_day
+                    }
+                )
+
             except LeaveBalance.DoesNotExist:
                 return Response({"error": "Leave balance not found", "status": 404})
 
+        # 6. Response
         serializer = LeaveRequestSerializer(leave_request)
         return Response({
             "data": serializer.data,
-            "message": f"Leave request {action}d successfully",
+            "message": f"Leave request updated to '{status.name}' successfully",
             "status": 200
         })
+
+
 
 
 # get leave request
@@ -489,3 +518,46 @@ class UpdateLeaveRequest(APIView):
             return Response({"data": serializer.data, "status": 200})
         return Response({"error": serializer.errors, "status": 400})
 
+
+#! log
+def create_leave_log(leave_request):
+    start = leave_request.from_date
+    end = leave_request.to_date
+    is_half_day = leave_request.is_half_day
+
+    for i in range((end - start).days + 1):
+        leave_date = start + timedelta(days=i)
+
+        # Skip weekends
+        if leave_date.weekday() in WEEKENDS:
+            continue
+
+        LeaveLog.objects.get_or_create(
+            leave_request=leave_request,
+            employee=leave_request.employee,
+            leave_type=leave_request.leave_type,
+            date=leave_date,
+            defaults={'is_half_day': is_half_day}
+        )
+
+
+# log for daily attendance/audit
+class LeaveLogListView(APIView):
+    def get(self, request):
+        logs = LeaveLog.objects.filter(leave_request__deleted=False).order_by("-date")
+        serializer = LeaveLogSerializer(logs, many=True)
+        return Response({"data": serializer.data, "status": 200})
+
+#! leave summary
+class LeaveSummaryLogListView(APIView):
+    def get(self, request):
+        try:
+            queryset = LeaveSummaryLog.objects.select_related(
+                'employee', 'leave_type'
+            ).order_by('-created_at')
+
+            serializer = LeaveSummaryLogSerializer(queryset, many=True)
+            return Response({"data": serializer.data, "status": 200})
+
+        except Exception as e:
+            return Response({"error": str(e), "status": 500})
