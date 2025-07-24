@@ -15,7 +15,7 @@ class LeaveStatusAdmin(admin.ModelAdmin):
 
 @admin.register(LeaveRequest)
 class LeaveRequestAdmin(admin.ModelAdmin):
-    list_display = ('id', 'employee', 'leave_type', 'status', 'from_date', 'to_date', 'is_half_day', 'deleted')
+    list_display = ('id', 'employee', 'leave_type', 'status', 'from_date', 'to_date', 'approved_by','is_half_day', 'deleted')
     search_fields = ('employee__first_name', 'employee__last_name')
     list_filter = ('status', 'leave_type', 'deleted')
 

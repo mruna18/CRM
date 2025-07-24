@@ -18,13 +18,15 @@ urlpatterns = [
     path("leave-status/delete/<int:id>/", DeleteLeaveStatus.as_view()),
 
     # leave balance
-    path('leave/balance/', LeaveBalanceView.as_view(), name='leave-balance-list'),
-    path('leave/balance/<int:employee_id>/', LeaveBalanceForEmployee.as_view(), name='leave-balance-employee'),
+    path('balance/', LeaveBalanceView.as_view(), name='leave-balance-list'),
+    path('balance/<int:employee_id>/', LeaveBalanceForEmployee.as_view(), name='leave-balance-employee'),
 
     #leave
-    path('create/', CreateLeave.as_view(), name='create-leave'),
-    # path('leave/', GetAllLeaves.as_view(), name='get-all-leaves'),
-    # path('leave/<int:id>/', GetLeave.as_view(), name='get-leave'),
-    # path('leave/update/', UpdateLeave.as_view(), name='update-leave'),
-    # path('leave/delete/<int:id>/', DeleteLeave.as_view(), name='delete-leave'),
+    path('create-leave/', CreateLeave.as_view(), name='create-leave'),
+    path('approve-leave/', ApproveLeaveRequest.as_view(), name='approve-leave'),
+    path('get-leave/', GetAllLeaveRequests.as_view(), name='get-all-leaves'),
+    path('get-leave/all/', GetAllLeaveRequestsAdmin.as_view(), name='get-all-leaves'), #! check when add authentication
+    path('leave/<int:id>/', GetLeaveRequestDetail.as_view(), name='get-leave'),
+    path('update-leave/', UpdateLeaveRequest.as_view(), name='update-leave'),
+    path('delete-leave/<int:id>/', DeleteLeaveRequest.as_view(), name='delete-leave'),
 ]

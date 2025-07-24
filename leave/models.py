@@ -33,10 +33,11 @@ class LeaveRequest(models.Model):
     from_date = models.DateField()
     to_date = models.DateField()
     is_half_day = models.BooleanField(default=False)
+    total_days = models.DecimalField(max_digits=4, decimal_places=1, default=0)  # Allow half days
 
     reason = models.TextField(null=True, blank=True)
     remarks_by_superior = models.TextField(null=True, blank=True)
-
+    approved_by = models.ForeignKey(Employee, on_delete=models.SET_NULL, null=True, blank=True, related_name="approved_leaves")
     applied_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -65,6 +66,11 @@ class LeaveBalance(models.Model):
     class Meta:
         unique_together = ('employee', 'leave_type')
         db_table = 'leave_balance'
+
+    @property
+    def days_left(self):
+        """Calculate remaining leave days"""
+        return self.total_allocated - self.used
 
     def __str__(self):
         return f"{self.employee} - {self.leave_type} | {self.used}/{self.total_allocated}"

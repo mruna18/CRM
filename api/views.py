@@ -195,40 +195,57 @@ class EmployeeUpdate(APIView):
     def post(self, request, pk, *args, **kwargs):
         data = request.data
         required_fields = ["branch", "department", "role", "designation", "email", "mobile_no"]
+        
         for field in required_fields:
             if not data.get(field):
                 return Response({"error": f"{field} cannot be null", "status": "500"})
+
         try:
             employee = Employee.objects.get(id=pk, deleted=False)
         except Employee.DoesNotExist:
             return Response({"error": "Employee not found", "status": "500"})
+
+        # Check uniqueness of email and mobile_no
         if Employee.objects.filter(email=data["email"], deleted=False).exclude(id=employee.id).exists():
             return Response({"error": "An employee with this email already exists.", "status": "500"})
         if Employee.objects.filter(mobile_no=data["mobile_no"], deleted=False).exclude(id=employee.id).exists():
             return Response({"error": "An employee with this phone number already exists.", "status": "500"})
-        print(request.user.id)
+
         try:
             current_employee = Employee.objects.get(user=request.user.id, deleted=False)
         except Employee.DoesNotExist:
             return Response({"error": "Unauthorized access", "status": "500"})
+
         if current_employee != (employee.superior if employee.superior else None):
             return Response({"error": "You are not authorized to update this employee", "status": "500"})
+
         user = employee.user
         if not user:
             return Response({"error": "User not linked to employee", "status": "500"})
+
+        # Update user fields
         user.first_name = data.get("first_name", user.first_name)
         user.last_name = data.get("last_name", user.last_name)
-        user.email = data["email"]  # Email must always be updated
-        if user.username != data["mobile_no"]:
-            if User.objects.filter(username=data["mobile_no"]).exclude(id=user.id).exists():
+        user.email = data["email"]
+
+        new_username = data["mobile_no"]
+        if user.username != new_username:
+            if User.objects.filter(username=new_username).exclude(id=user.id).exists():
                 return Response({"error": "Another user with this mobile number already exists.", "status": "500"})
-            user.username = data["mobile_no"]  # Set mobile_no as username
+            user.username = new_username
+
+        # Reset password if needed
+        if data.get("set_password"):
+            user.set_password(data["set_password"])  # securely hash and store the password
+
         user.save()
-        serializer = EmployeeSerializer(employee, data=data, partial=True)  # partial=True allows updating only provided fields
+
+        serializer = EmployeeSerializer(employee, data=data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response({"data": "Employee updated successfully", "status": "200"})
-        return Response({"error": "Employee update failed", "status": "500"})
+
+        return Response({"error": serializer.errors, "status": "500"})
 
 class EmployeeDelete(APIView):
     def post(self, request, pk, *args, **kwargs):

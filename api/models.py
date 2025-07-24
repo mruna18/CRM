@@ -84,6 +84,7 @@ class Employee(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='employee', null=True, blank=True) 
     superior = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True)
     deleted = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         db_table = 'Employee'
