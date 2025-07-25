@@ -26,3 +26,21 @@ class AttendanceAdmin(admin.ModelAdmin):
     readonly_fields = ('total_working_hour',)
     ordering = ('-check_in_date',)
     autocomplete_fields = ['employee', 'status']
+
+@admin.register(AttendenceSession)
+class AttendenceSessionAdmin(admin.ModelAdmin):
+    list_display = (
+        'employee', 'get_date', 'login_time', 'logout_time', 'session_duration'
+    )
+    search_fields = ('employee__user__username',)
+    list_filter = ('login_time',)
+
+    def get_date(self, obj):
+        return obj.login_time.date() if obj.login_time else "-"
+    get_date.short_description = "Date"
+
+    def session_duration(self, obj):
+        if obj.login_time and obj.logout_time:
+            return obj.logout_time - obj.login_time
+        return "-"
+    session_duration.short_description = "Duration"

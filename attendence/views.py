@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.db.models import Q
 from datetime import datetime, timedelta
+from rest_framework.permissions import IsAuthenticated
 
 # Create your views here.
 class CreateStatus(APIView):
@@ -60,7 +61,6 @@ class DeleteStatus(APIView):
         return Response({"msg":"Status deleted successfully","status":200})
 
 #! attendence
-
 class CreateAttendence(APIView):
     def post(self, request):
         data = request.data.copy()
@@ -68,19 +68,17 @@ class CreateAttendence(APIView):
         employee_id = data.get('employee')
         check_in_date = data.get('check_in_date')
         status_id = data.get('status')
+        check_in = data.get("check_in")
+        check_out = data.get("check_out")
 
         if not employee_id or not check_in_date or not status_id:
             return Response({"error": "employee, status and check_in_date are required", "status": 400})
 
         # Validate employee
         try:
-            Employee.objects.get(id=employee_id, deleted=False)
+            employee = Employee.objects.get(id=employee_id, deleted=False)
         except Employee.DoesNotExist:
             return Response({"error": "Employee not found", "status": 404})
-
-        # Prevent duplicates
-        if Attendence.objects.filter(employee_id=employee_id, check_in_date=check_in_date, deleted=False).exists():
-            return Response({"error": "Attendance already exists for this employee on this date", "status": 409})
 
         # Validate status
         try:
@@ -90,7 +88,41 @@ class CreateAttendence(APIView):
 
         status_name = status.name.lower()
 
-        # Handle status-based conditions
+        # Check if an attendance already exists for that day
+        existing_attendance = Attendence.objects.filter(
+            employee_id=employee_id,
+            check_in_date=check_in_date,
+            deleted=False
+        ).first()
+
+        if existing_attendance:
+            # ⏱️ Check-out Update Flow
+            if check_out:
+                if existing_attendance.check_out:
+                    return Response({"error": "Already checked out for today", "status": 409})
+                try:
+                    in_time = existing_attendance.check_in
+                    out_time = datetime.strptime(check_out, "%H:%M:%S").time()
+                    if in_time and out_time:
+                        # Calculate working hours
+                        in_dt = datetime.combine(datetime.today(), in_time)
+                        out_dt = datetime.combine(datetime.today(), out_time)
+                        if out_dt > in_dt:
+                            delta = out_dt - in_dt
+                            hours, remainder = divmod(delta.seconds, 3600)
+                            minutes = remainder // 60
+                            existing_attendance.check_out = out_time
+                            existing_attendance.total_working_hour = f"{hours:02d}:{minutes:02d}"
+                            existing_attendance.save()
+                            return Response({"message": "Check-out updated", "status": 200})
+                        else:
+                            return Response({"error": "Check-out time must be after check-in", "status": 400})
+                except Exception as e:
+                    return Response({"error": f"Error during check-out update: {str(e)}", "status": 400})
+            else:
+                return Response({"error": "Attendance already exists for this employee on this date", "status": 409})
+
+        # 🌞 New attendance creation (check-in or leave types)
         if status_name in ["absent", "week off", "sick leave", "casual leave", "compensatory off"]:
             data["check_in"] = None
             data["check_out"] = None
@@ -98,9 +130,7 @@ class CreateAttendence(APIView):
         elif status_name == "half day":
             data["total_working_hour"] = "04:00"
         else:
-            # Calculate working hours if check_in and check_out are provided
-            check_in = data.get("check_in")
-            check_out = data.get("check_out")
+            # Check-in + optional check-out
             if check_in and check_out:
                 try:
                     in_time = datetime.strptime(check_in, "%H:%M:%S")
@@ -113,12 +143,13 @@ class CreateAttendence(APIView):
                 except Exception as e:
                     return Response({"error": f"Error calculating hours: {str(e)}", "status": 400})
 
+        # Save
         serializer = AttendenceSerializer(data=data)
         if serializer.is_valid():
             serializer.save()
             return Response({"data": serializer.data, "status": 201})
-
         return Response({"error": serializer.errors, "status": 400})
+
     
 #update
 class UpdateAttendence(APIView):

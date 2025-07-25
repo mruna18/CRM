@@ -1,22 +1,21 @@
 from django.shortcuts import render
 from .serializer import *
 from rest_framework_simplejwt.views import TokenRefreshView
-# from api.models import Employee
-from django.db.models import F,Value
+from django.db.models import F, Value
 from django.db.models.functions import Concat
-# import random,requests,urllib
 from rest_framework.authentication import BaseAuthentication
 from .models import BlacklistToken
-from rest_framework_simplejwt.tokens import AccessToken,RefreshToken
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 from django.contrib.auth.models import User
 from . import exception as e
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate, get_user_model
 from rest_framework.permissions import AllowAny
-
-
-# Create your views here.
+from datetime import datetime, date
+from api.models import *
+from attendence.models import *
+from django.utils import timezone
 
 class CustomTokenAuthentication(BaseAuthentication):
     def authenticate(self, request):
@@ -29,11 +28,9 @@ class CustomTokenAuthentication(BaseAuthentication):
         except IndexError:
             raise e.CustomAuthenticationFailed(detail='Your session has expired. Please log in again.')
 
-        # Check if token is blacklisted
         if BlacklistToken.objects.filter(token=token).exists():
             raise e.CustomAuthenticationFailed(detail='Your session has expired. Please log in again.')
 
-        # Validate the token
         try:
             access_token = AccessToken(token)
             user = User.objects.get(id=access_token['user_id'])
@@ -41,19 +38,16 @@ class CustomTokenAuthentication(BaseAuthentication):
             raise e.CustomAuthenticationFailed(detail='Your session has expired. Please log in again.')
 
         return (user, token)
-    
 
 class AllowAnyView(APIView):
     permission_classes = (AllowAny,)
     authentication_classes = []
 
-#register view
 class RegisterView(AllowAnyView):
     def post(self, request):
         try:
             data = request.data
 
-            # Manual validation
             if data.get('password') != data.get('confirm_password'):
                 return Response({"error": "Passwords do not match.", "status": 400}, status=400)
 
@@ -63,12 +57,10 @@ class RegisterView(AllowAnyView):
             if User.objects.filter(email=data.get('email')).exists():
                 return Response({"error": "Email already exists.", "status": 400}, status=400)
 
-            # Proceed with serializer
             serializer = UserRegistrationSerializer(data=data)
             if serializer.is_valid():
                 user = serializer.save()
 
-                # Generate tokens
                 refresh = RefreshToken.for_user(user)
                 try:
                     mobile = int(user.username)
@@ -83,7 +75,6 @@ class RegisterView(AllowAnyView):
                     "mobile": mobile,
                 }
 
-                # Prepare response with refresh token as cookie
                 response = Response({
                     "token": str(refresh.access_token),
                     "user": user_data,
@@ -107,8 +98,7 @@ class RegisterView(AllowAnyView):
                 "data": f"An error occurred during registration: {str(e)}",
                 "status": 500
             }, status=500)
-        
-# Login view
+
 User = get_user_model()
 
 class LoginView(AllowAnyView):
@@ -126,7 +116,6 @@ class LoginView(AllowAnyView):
                 return Response({'data': "Invalid credentials.", "status": 401}, status=401)
 
             user = authenticate(username=user_obj.username, password=password)
-
             if user is None:
                 return Response({'data': "Invalid credentials.", "status": 401}, status=401)
 
@@ -144,6 +133,30 @@ class LoginView(AllowAnyView):
                 "mobile": mobile,
             }
 
+            # Attendance check-in and session logging
+            try:
+                employee = Employee.objects.get(user=user, deleted=False)
+                today = date.today()
+                now = datetime.now()
+
+                present_status, _ = AttendenceStatus.objects.get_or_create(name__iexact="present", deleted=False)
+
+                attendance, _ = Attendence.objects.get_or_create(
+                    employee=employee,
+                    check_in_date=today,
+                    defaults={"status": present_status}
+                )
+
+                # Create a new login session
+                AttendanceSession.objects.create(
+                    attendance=attendance,
+                    login_time=now
+                )
+
+            except Exception as ex:
+                print("Error logging attendance at login:", ex)
+                pass
+
             response = Response({
                 "token": str(refresh.access_token),
                 "user": [user_data],
@@ -152,7 +165,7 @@ class LoginView(AllowAnyView):
 
             response.set_cookie(
                 key='refreshToken',
-                value=str(refresh),  #gives refresh token
+                value=str(refresh),
                 httponly=True,
                 secure=True,
                 samesite='None'
@@ -161,16 +174,15 @@ class LoginView(AllowAnyView):
             return response
 
         except Exception as e:
-            return Response({'data': f"An error occurred during login: {str(e)}", "status": 500}, status=500)     
+            return Response({'data': f"An error occurred during login: {str(e)}", "status": 500}, status=500)
 
-#refresh token view
+
 class CustomTokenRefreshView(TokenRefreshView):
     def post(self, request):
         try:
-            # READ COOKIE HERE - This is how we get the refresh token
             refresh_token = request.COOKIES.get('refreshToken')
             access_token = RefreshToken(refresh_token).access_token
-            
+
             response = Response()
             response.data = {
                 "access_token": str(access_token),
@@ -179,31 +191,77 @@ class CustomTokenRefreshView(TokenRefreshView):
             return response
         except:
             response = Response(status=401)
-            # DELETE COOKIE HERE - Clear invalid cookie
             response.delete_cookie('refreshToken', path='/', domain='your-domain.com')
             response.data = {
                 "data": "Your session has expired. Please log in again.",
                 "status": 500
             }
             return response
-        
 
-#logout view
 class LogoutView(APIView):
     def post(self, request):
         try:
-            response = Response()
-            # DELETE COOKIE HERE - Remove the refresh token
-            response.delete_cookie('refreshToken', path='/', domain='your-domain.com')
-            
+            # === 1. Extract user from token ===
             token = request.headers.get('Authorization').split('Bearer ')[1]
+            access_token = AccessToken(token)
+            user_id = access_token['user_id']
+
+            # === 2. Get employee and today's date ===
+            employee = Employee.objects.get(user_id=user_id, deleted=False)
+            today = date.today()
+
+            # === 3. Get today's attendance record (if any) ===
+            attendance = Attendence.objects.filter(
+                employee=employee,
+                check_in_date=today,
+                deleted=False
+            ).first()
+
+            # === 4. Close latest open session ===
+            if attendance:
+                session = AttendenceSession.objects.filter(
+                    employee=employee,
+                    login_time__date=today,
+                    logout_time__isnull=True,
+                    deleted=False
+                ).order_by('-login_time').first()
+
+                if session:
+                    session.logout_time = timezone.now()
+                    session.save()
+
+                    # Recalculate total hours
+                    sessions = AttendenceSession.objects.filter(
+                        employee=employee,
+                        login_time__date=today,
+                        logout_time__isnull=False,
+                        deleted=False
+                    )
+
+                    total_seconds = sum(
+                        (s.logout_time - s.login_time).total_seconds()
+                        for s in sessions
+                    )
+                    hours = int(total_seconds // 3600)
+                    minutes = int((total_seconds % 3600) // 60)
+
+                    attendance.total_working_hour = f"{hours:02d}:{minutes:02d}"
+                    attendance.check_out = session.logout_time.time()
+                    attendance.check_out_date = session.logout_time.date()
+                    attendance.save()
+
+            # === 5. Blacklist token and clear cookie ===
+            response = Response()
+            response.delete_cookie('refreshToken', path='/', domain='your-domain.com')
+
+            if not BlacklistToken.objects.filter(token=token).exists():
+                BlacklistToken.objects.create(token=token)
+
             response.data = {"data": "User logout successfully.", "status": 200}
-            
-            if BlacklistToken.objects.filter(token=token).exists():
-                return Response({"data": "User logout successfully.", "status": 500})
-            
-            # Blacklist the access token
-            BlacklistToken.objects.create(token=token)
             return response
-        except:
-            return Response({"data": "Something went wrong while logout!", "status": 500})
+
+        except Exception as e:
+            return Response({
+                "data": f"Something went wrong while logout! {str(e)}",
+                "status": 500
+            })

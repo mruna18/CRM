@@ -5,6 +5,7 @@ from .serializers import *
 from api.models import *  
 from datetime import datetime, timedelta
 from django.db.models import Q
+from attendence.models import * 
 
 #! leave type
 class CreateLeaveType(APIView):
@@ -305,7 +306,7 @@ class ApproveLeaveRequest(APIView):
         if not leave_id or not status_id:
             return Response({"error": "leave_id and status_id are required", "status": 400})
 
-        # 1. Get approver from logged in user
+        # 1. Get approver from logged-in user
         try:
             approver = Employee.objects.get(user=request.user, deleted=False)
         except Employee.DoesNotExist:
@@ -321,19 +322,23 @@ class ApproveLeaveRequest(APIView):
         except LeaveRequest.DoesNotExist:
             return Response({"error": "Leave request not found", "status": 404})
 
-        # 3. Validate status
+        # 3. Prevent duplicate approval
+        if leave_request.status and leave_request.status.name.lower() == "approved":
+            return Response({"error": "This leave request is already approved."}, status=400)
+
+        # 4. Validate new status
         try:
             status = LeaveStatus.objects.get(id=status_id, deleted=False)
         except LeaveStatus.DoesNotExist:
             return Response({"error": "Invalid leave status", "status": 400})
 
-        # 4. Update leave request
+        # 5. Update leave request
         leave_request.status = status
         leave_request.approved_by = approver
         leave_request.remarks_by_superior = remarks
         leave_request.save()
 
-        # 5. If approved, update balance and create logs
+        # 6. If approved, update balance and create logs
         if status.name.lower() == "approved":
             try:
                 balance = LeaveBalance.objects.get(
@@ -344,7 +349,6 @@ class ApproveLeaveRequest(APIView):
                 balance.used += float(leave_request.total_days or 0)
                 balance.save()
 
-                # Log each valid leave day (excluding weekends)
                 current_date = leave_request.from_date
                 while current_date <= leave_request.to_date:
                     if current_date.weekday() not in WEEKENDS:
@@ -359,28 +363,64 @@ class ApproveLeaveRequest(APIView):
                         )
                     current_date += timedelta(days=1)
 
-                # Log leave summary once per range
-                LeaveSummaryLog.objects.get_or_create(
-                    employee=leave_request.employee,
-                    leave_type=leave_request.leave_type,
-                    from_date=leave_request.from_date,
-                    to_date=leave_request.to_date,
-                    leave_request=leave_request,
-                    defaults={
-                        "is_half_day": leave_request.is_half_day
-                    }
-                )
+                # LeaveSummaryLog.objects.get_or_create(
+                #     employee=leave_request.employee,
+                #     leave_type=leave_request.leave_type,
+                #     from_date=leave_request.from_date,
+                #     to_date=leave_request.to_date,
+                #     leave_request=leave_request,
+                #     defaults={
+                #         "is_half_day": leave_request.is_half_day
+                #     }
+                # )
 
             except LeaveBalance.DoesNotExist:
                 return Response({"error": "Leave balance not found", "status": 404})
+            
+        # Get or create "On Leave" status
+        try:
+            on_leave_status = AttendenceStatus.objects.get(name__iexact="on leave", deleted=False)
+        except AttendenceStatus.DoesNotExist:
+            on_leave_status = AttendenceStatus.objects.create(name="On Leave", acronym="OL")
 
-        # 6. Response
+        # Auto-create attendance for leave days
+        current_date = leave_request.from_date
+        while current_date <= leave_request.to_date:
+            if current_date.weekday() not in WEEKENDS:
+                # 1. Leave log (already exists)
+                LeaveLog.objects.get_or_create(
+                    employee=leave_request.employee,
+                    leave_type=leave_request.leave_type,
+                    date=current_date,
+                    leave_request=leave_request,
+                    defaults={
+                        "is_half_day": leave_request.is_half_day,
+                        "status": status,
+                        "approved_by": approver,
+                        "remarks": remarks
+                    }
+                )
+
+                # 2. Attendance log
+                Attendence.objects.get_or_create(
+                    employee=leave_request.employee,
+                    check_in_date=current_date,
+                    defaults={
+                        "status": on_leave_status,
+                        "remarks": "Auto-marked as on leave",
+                        "total_working_hour": "00:00"
+                    }
+                )
+            current_date += timedelta(days=1)
+
+        # 7. Response
         serializer = LeaveRequestSerializer(leave_request)
         return Response({
             "data": serializer.data,
             "message": f"Leave request updated to '{status.name}' successfully",
             "status": 200
         })
+
 
 
 
@@ -547,17 +587,3 @@ class LeaveLogListView(APIView):
         logs = LeaveLog.objects.filter(leave_request__deleted=False).order_by("-date")
         serializer = LeaveLogSerializer(logs, many=True)
         return Response({"data": serializer.data, "status": 200})
-
-#! leave summary
-class LeaveSummaryLogListView(APIView):
-    def get(self, request):
-        try:
-            queryset = LeaveSummaryLog.objects.select_related(
-                'employee', 'leave_type'
-            ).order_by('-created_at')
-
-            serializer = LeaveSummaryLogSerializer(queryset, many=True)
-            return Response({"data": serializer.data, "status": 200})
-
-        except Exception as e:
-            return Response({"error": str(e), "status": 500})

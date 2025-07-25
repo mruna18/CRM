@@ -1,5 +1,5 @@
 from django.db import models
-from api.models import Employee  # Adjust if needed
+from api.models import *
 
 class LeaveType(models.Model):
     name = models.CharField(max_length=50, unique=True)  # e.g., Sick, Casual, Maternity
@@ -82,7 +82,15 @@ class LeaveLog(models.Model):
     leave_type = models.ForeignKey(LeaveType, on_delete=models.SET_NULL, null=True)
     date = models.DateField()
     is_half_day = models.BooleanField(default=False)
+    
+    # Enhanced fields for better daily tracking
+    status = models.ForeignKey(LeaveStatus, on_delete=models.SET_NULL, null=True, blank=True)
+    remarks = models.TextField(null=True, blank=True)
+    approved_by = models.ForeignKey(Employee, on_delete=models.SET_NULL, null=True, blank=True, related_name="daily_approved_leaves")
+    
+    # For tracking changes
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "leave_log"
@@ -90,21 +98,3 @@ class LeaveLog(models.Model):
 
     def __str__(self):
         return f"{self.employee} - {self.date} ({'Half' if self.is_half_day else 'Full'})"
-    
-
-#! summary - dashboard
-class LeaveSummaryLog(models.Model):
-    employee = models.ForeignKey(Employee, on_delete=models.CASCADE)
-    leave_type = models.ForeignKey(LeaveType, on_delete=models.CASCADE)
-    from_date = models.DateField()
-    to_date = models.DateField()
-    is_half_day = models.BooleanField(default=False)
-    leave_request = models.ForeignKey(LeaveRequest, on_delete=models.CASCADE)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = "leave_summary"
-        unique_together = ("employee", "from_date", "to_date")
-
-    def __str__(self):
-        return f"{self.employee} - {self.leave_type.name} from {self.from_date} to {self.to_date} ({'Half Day' if self.is_half_day else 'Full Days'})"

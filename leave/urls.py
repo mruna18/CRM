@@ -32,6 +32,5 @@ urlpatterns = [
 
     #log
     path("logs/", LeaveLogListView.as_view(), name="leave-logs"),
-    path("summary-log/", LeaveSummaryLogListView.as_view(), name="leave-summary-log-list"),
 ]
 

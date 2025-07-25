@@ -1,5 +1,5 @@
 from django.db import models
-from api.models import Employee
+from api.models import *
 
 class AttendenceStatus(models.Model):
     name=models.CharField(max_length=200,null=True,blank=True)#Present,Absent,Sick Leave,Casual Leave ,Week off,Half Day,Late,Early Leave,Compensatory Off 
@@ -36,6 +36,23 @@ class Attendence(models.Model):
     class Meta:
         db_table = 'Attendance'
         unique_together = ('employee', 'check_in_date')
+        indexes = [
+        models.Index(fields=['check_in_date']),
+        ]
+        ordering = ['check_in_date']
 
     def __str__(self):
         return f"{self.employee} - {self.check_in_date}"
+
+
+class AttendenceSession(models.Model):
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE)
+    login_time = models.DateTimeField()
+    logout_time = models.DateTimeField(null=True, blank=True)
+    deleted = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = "AttendenceSession"
+
+    def __str__(self):
+        return f"{self.employee} - {self.login_time.date()}"

@@ -43,18 +43,18 @@ class LeaveLogAdmin(admin.ModelAdmin):
     search_fields = ("employee__user__first_name", "employee__user__last_name", "leave_type__name")
     ordering = ("-date",)
 
-@admin.register(LeaveSummaryLog)
-class LeaveSummaryLogAdmin(admin.ModelAdmin):
-    list_display = (
-        'id',
-        'employee',
-        'leave_type',
-        'from_date',
-        'to_date',
-        'is_half_day',
-        'leave_request',
-        'created_at',
-    )
-    list_filter = ('leave_type', 'is_half_day', 'created_at')
-    search_fields = ('employee__user__first_name', 'employee__user__last_name', 'leave_type__name')
-    readonly_fields = ('created_at',)
+# @admin.register(LeaveSummaryLog)
+# class LeaveSummaryLogAdmin(admin.ModelAdmin):
+#     list_display = (
+#         'id',
+#         'employee',
+#         'leave_type',
+#         'from_date',
+#         'to_date',
+#         'is_half_day',
+#         'leave_request',
+#         'created_at',
+#     )
+#     list_filter = ('leave_type', 'is_half_day', 'created_at')
+#     search_fields = ('employee__user__first_name', 'employee__user__last_name', 'leave_type__name')
+#     readonly_fields = ('created_at',)
