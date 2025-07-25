@@ -30,9 +30,8 @@ class AttendanceAdmin(admin.ModelAdmin):
 @admin.register(AttendenceSession)
 class AttendenceSessionAdmin(admin.ModelAdmin):
     list_display = (
-        'employee', 'get_date', 'login_time', 'logout_time', 'session_duration'
+        'attendence', 'get_date', 'login_time', 'logout_time', 'session_duration'
     )
-    search_fields = ('employee__user__username',)
     list_filter = ('login_time',)
 
     def get_date(self, obj):

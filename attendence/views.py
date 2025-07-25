@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from django.db.models import Q
 from datetime import datetime, timedelta
 from rest_framework.permissions import IsAuthenticated
+from django.utils import timezone
 
 # Create your views here.
 class CreateStatus(APIView):
@@ -64,7 +65,6 @@ class DeleteStatus(APIView):
 class CreateAttendence(APIView):
     def post(self, request):
         data = request.data.copy()
-
         employee_id = data.get('employee')
         check_in_date = data.get('check_in_date')
         status_id = data.get('status')
@@ -74,83 +74,70 @@ class CreateAttendence(APIView):
         if not employee_id or not check_in_date or not status_id:
             return Response({"error": "employee, status and check_in_date are required", "status": 400})
 
-        # Validate employee
         try:
             employee = Employee.objects.get(id=employee_id, deleted=False)
         except Employee.DoesNotExist:
             return Response({"error": "Employee not found", "status": 404})
 
-        # Validate status
         try:
             status = AttendenceStatus.objects.get(id=status_id, deleted=False)
         except AttendenceStatus.DoesNotExist:
             return Response({"error": "Status not found", "status": 404})
 
         status_name = status.name.lower()
+        existing = Attendence.objects.filter(employee_id=employee_id, check_in_date=check_in_date, deleted=False).first()
 
-        # Check if an attendance already exists for that day
-        existing_attendance = Attendence.objects.filter(
-            employee_id=employee_id,
-            check_in_date=check_in_date,
-            deleted=False
-        ).first()
-
-        if existing_attendance:
-            # ⏱️ Check-out Update Flow
+        if existing:
+            # Allow only check-out update (if not already present)
             if check_out:
-                if existing_attendance.check_out:
-                    return Response({"error": "Already checked out for today", "status": 409})
+                if existing.check_out:
+                    return Response({"error": "Already checked out", "status": 409})
                 try:
-                    in_time = existing_attendance.check_in
+                    in_time = existing.check_in
                     out_time = datetime.strptime(check_out, "%H:%M:%S").time()
                     if in_time and out_time:
-                        # Calculate working hours
                         in_dt = datetime.combine(datetime.today(), in_time)
                         out_dt = datetime.combine(datetime.today(), out_time)
                         if out_dt > in_dt:
                             delta = out_dt - in_dt
                             hours, remainder = divmod(delta.seconds, 3600)
                             minutes = remainder // 60
-                            existing_attendance.check_out = out_time
-                            existing_attendance.total_working_hour = f"{hours:02d}:{minutes:02d}"
-                            existing_attendance.save()
+                            existing.check_out = out_time
+                            existing.total_working_hour = f"{hours:02d}:{minutes:02d}"
+                            existing.save()
                             return Response({"message": "Check-out updated", "status": 200})
                         else:
                             return Response({"error": "Check-out time must be after check-in", "status": 400})
                 except Exception as e:
-                    return Response({"error": f"Error during check-out update: {str(e)}", "status": 400})
+                    return Response({"error": f"Error: {str(e)}", "status": 400})
             else:
-                return Response({"error": "Attendance already exists for this employee on this date", "status": 409})
+                return Response({"error": "Attendance already exists for this date", "status": 409})
 
-        # 🌞 New attendance creation (check-in or leave types)
+        # New attendance creation
         if status_name in ["absent", "week off", "sick leave", "casual leave", "compensatory off"]:
             data["check_in"] = None
             data["check_out"] = None
             data["total_working_hour"] = "00:00"
         elif status_name == "half day":
             data["total_working_hour"] = "04:00"
-        else:
-            # Check-in + optional check-out
-            if check_in and check_out:
-                try:
-                    in_time = datetime.strptime(check_in, "%H:%M:%S")
-                    out_time = datetime.strptime(check_out, "%H:%M:%S")
-                    if out_time > in_time:
-                        delta = out_time - in_time
-                        hours, remainder = divmod(delta.seconds, 3600)
-                        minutes = remainder // 60
-                        data["total_working_hour"] = f"{hours:02d}:{minutes:02d}"
-                except Exception as e:
-                    return Response({"error": f"Error calculating hours: {str(e)}", "status": 400})
+        elif check_in and check_out:
+            try:
+                in_time = datetime.strptime(check_in, "%H:%M:%S")
+                out_time = datetime.strptime(check_out, "%H:%M:%S")
+                if out_time > in_time:
+                    delta = out_time - in_time
+                    hours, remainder = divmod(delta.seconds, 3600)
+                    minutes = remainder // 60
+                    data["total_working_hour"] = f"{hours:02d}:{minutes:02d}"
+            except Exception as e:
+                return Response({"error": f"Error calculating hours: {str(e)}", "status": 400})
 
-        # Save
         serializer = AttendenceSerializer(data=data)
         if serializer.is_valid():
             serializer.save()
             return Response({"data": serializer.data, "status": 201})
         return Response({"error": serializer.errors, "status": 400})
-
-    
+ 
 #update
 class UpdateAttendence(APIView):
     def post(self, request):
@@ -158,12 +145,12 @@ class UpdateAttendence(APIView):
         attendence_id = data.get("id")
 
         if not attendence_id:
-            return Response({"error": "Attendance ID is required", "status": 400})
+            return Response({"error": "attendence ID is required", "status": 400})
 
         try:
             attendence = Attendence.objects.get(id=attendence_id, deleted=False)
         except Attendence.DoesNotExist:
-            return Response({"error": "Attendance not found", "status": 404})
+            return Response({"error": "attendence not found", "status": 404})
 
         # Validate employee
         employee_id = data.get("employee")
@@ -182,7 +169,7 @@ class UpdateAttendence(APIView):
                 deleted=False
             ).exclude(id=attendence_id).exists():
                 return Response({
-                    "error": "Attendance already exists for this employee on this date.",
+                    "error": "attendence already exists for this employee on this date.",
                     "status": 409
                 })
 
@@ -256,7 +243,7 @@ class GetAttendenceById(APIView):
         try:
             attendence = Attendence.objects.get(id=id, deleted=False)
         except Attendence.DoesNotExist:
-            return Response({"error": "Attendance not found", "status": 404})
+            return Response({"error": "attendence not found", "status": 404})
 
         serializer = AttendenceSerializer(attendence)
         return Response({"data": serializer.data, "status": 200})
@@ -267,10 +254,10 @@ class DeleteAttendence(APIView):
         try:
             attendence = Attendence.objects.get(id=id, deleted=False)
         except Attendence.DoesNotExist:
-            return Response({"error": "Attendance not found", "status": 404})
+            return Response({"error": "attendence not found", "status": 404})
 
         attendence.deleted = True
         attendence.save()
 
-        return Response({"msg": "Attendance deleted successfully", "status": 200})
+        return Response({"msg": "attendence deleted successfully", "status": 200})
 

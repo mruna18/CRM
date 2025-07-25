@@ -46,13 +46,10 @@ class Attendence(models.Model):
 
 
 class AttendenceSession(models.Model):
-    employee = models.ForeignKey(Employee, on_delete=models.CASCADE)
+    attendence = models.ForeignKey('Attendence', on_delete=models.DO_NOTHING, null=True, blank=True) 
     login_time = models.DateTimeField()
     logout_time = models.DateTimeField(null=True, blank=True)
     deleted = models.BooleanField(default=False)
 
     class Meta:
-        db_table = "AttendenceSession"
-
-    def __str__(self):
-        return f"{self.employee} - {self.login_time.date()}"
+        db_table = "AttendanceSession"
