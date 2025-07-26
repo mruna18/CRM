@@ -20,7 +20,7 @@ class Attendence(models.Model):
     check_out_date = models.DateField(null=True, blank=True)
     check_out = models.TimeField(null=True, blank=True)
 
-    check_in_location = models.JSONField(null=True, blank=True)  # Example: {"lat": ..., "lng": ...}
+    check_in_location = models.JSONField(null=True, blank=True)  
     check_out_location = models.JSONField(null=True, blank=True)
 
     check_in_image = models.TextField(null=True, blank=True)  # Base64 or URL to image
@@ -30,6 +30,7 @@ class Attendence(models.Model):
 
     remarks = models.TextField(null=True, blank=True)
     total_working_hour = models.CharField(max_length=20, null=True, blank=True)  # Storing as HH:MM format
+    overtime_minutes = models.PositiveIntegerField(default=0, null=True, blank=True)
     
     deleted = models.BooleanField(default=False)
 

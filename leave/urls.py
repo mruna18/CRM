@@ -3,7 +3,7 @@ from .views import *
 
 urlpatterns = [
 
-    #leave type
+    # leave type
     path("leave-type/create/", CreateLeaveType.as_view()),
     path("leave-type/all/", GetAllLeaveTypes.as_view()),
     path("leave-type/<int:id>/", GetLeaveTypeById.as_view()),
@@ -18,19 +18,19 @@ urlpatterns = [
     path("leave-status/delete/<int:id>/", DeleteLeaveStatus.as_view()),
 
     # leave balance
-    path('balance/', LeaveBalanceView.as_view(), name='leave-balance-list'),
-    path('balance/<int:employee_id>/', LeaveBalanceForEmployee.as_view(), name='leave-balance-employee'),
+    path('get-balance/', LeaveBalanceView.as_view(), name='leave-balance-list'),
+    path('get-balance/<int:employee_id>/', LeaveBalanceForEmployee.as_view(), name='leave-balance-employee'),
 
-    #leave
+    # leave
     path('create-leave/', CreateLeave.as_view(), name='create-leave'),
     path('approve-leave/', ApproveLeaveRequest.as_view(), name='approve-leave'),
+    path('cancel-leave/', CancelLeaveRequest.as_view(), name='cancel-leave'), 
     path('get-leave/', GetAllLeaveRequests.as_view(), name='get-all-leaves'),
-    path('get-leave/all/', GetAllLeaveRequestsAdmin.as_view(), name='get-all-leaves'), #! check when add authentication
-    path('leave/<int:id>/', GetLeaveRequestDetail.as_view(), name='get-leave'),
+    path('get-leave/all/', GetAllLeaveRequestsAdmin.as_view(), name='get-all-leaves'),  #! check when add authentication
+    path('get-leave_details/<int:id>/', GetLeaveRequestDetail.as_view(), name='get-leave'),
     path('update-leave/', UpdateLeaveRequest.as_view(), name='update-leave'),
     path('delete-leave/<int:id>/', DeleteLeaveRequest.as_view(), name='delete-leave'),
 
-    #log
+    # log
     path("logs/", LeaveLogListView.as_view(), name="leave-logs"),
 ]
-

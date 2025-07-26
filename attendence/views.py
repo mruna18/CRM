@@ -118,6 +118,9 @@ class CreateAttendence(APIView):
             data["check_in"] = None
             data["check_out"] = None
             data["total_working_hour"] = "00:00"
+            # total_minutes = hours * 60 + minutes
+            # overtime_minutes = max(0, total_minutes - 480)  # 8 hours = 480 mins
+            # data["overtime_minutes"] = overtime_minutes
         elif status_name == "half day":
             data["total_working_hour"] = "04:00"
         elif check_in and check_out:
@@ -129,6 +132,9 @@ class CreateAttendence(APIView):
                     hours, remainder = divmod(delta.seconds, 3600)
                     minutes = remainder // 60
                     data["total_working_hour"] = f"{hours:02d}:{minutes:02d}"
+                    total_minutes = hours * 60 + minutes
+                    overtime_minutes = max(0, total_minutes - 480)  # 8 hours = 480 mins
+                    data["overtime_minutes"] = overtime_minutes
             except Exception as e:
                 return Response({"error": f"Error calculating hours: {str(e)}", "status": 400})
 
@@ -160,7 +166,7 @@ class UpdateAttendence(APIView):
             except Employee.DoesNotExist:
                 return Response({"error": "Employee not found", "status": 404})
 
-        # Validate unique constraint (only if employee or date changed)
+        # Validate unique constraint
         check_in_date = data.get("check_in_date")
         if employee_id and check_in_date:
             if Attendence.objects.filter(
@@ -184,13 +190,18 @@ class UpdateAttendence(APIView):
         else:
             status_name = attendence.status.name.lower() if attendence.status else ""
 
+        # Default to no overtime
+        data["overtime_minutes"] = 0
+
         # Apply logic based on status
         if status_name in ["absent", "week off", "sick leave", "casual leave", "compensatory off"]:
             data["check_in"] = None
             data["check_out"] = None
             data["total_working_hour"] = "00:00"
+
         elif status_name == "half day":
             data["total_working_hour"] = "04:00"
+
         else:
             check_in = data.get("check_in")
             check_out = data.get("check_out")
@@ -203,6 +214,11 @@ class UpdateAttendence(APIView):
                         hours, remainder = divmod(delta.seconds, 3600)
                         minutes = remainder // 60
                         data["total_working_hour"] = f"{hours:02d}:{minutes:02d}"
+
+                        # Add overtime calculation here
+                        total_minutes = hours * 60 + minutes
+                        overtime_minutes = max(0, total_minutes - 480)  # 8 hours = 480 mins
+                        data["overtime_minutes"] = overtime_minutes
                 except Exception as e:
                     return Response({"error": f"Error calculating hours: {str(e)}", "status": 400})
 
@@ -212,6 +228,7 @@ class UpdateAttendence(APIView):
             return Response({"data": serializer.data, "status": 200})
 
         return Response({"error": serializer.errors, "status": 400})
+
 
 
 # get all

@@ -181,8 +181,7 @@ class CreateLeaveBalanceForEmployee(APIView):
             })
     
 
-#! leave
-
+#! request leave
 #? Optional: Assume Saturday and Sunday as weekends
 WEEKENDS = [5, 6]  # Saturday=5, Sunday=6
 
@@ -190,52 +189,69 @@ class CreateLeave(APIView):
     def post(self, request):
         data = request.data.copy()
 
-        employee_id = data.get("employee")
         leave_type_id = data.get("leave_type")
         from_date = data.get("from_date")
         to_date = data.get("to_date")
         is_half_day = data.get("is_half_day", False)
 
-        if not employee_id or not from_date or not to_date or not leave_type_id:
-            return Response({"error": "employee, leave_type, from_date, and to_date are required", "status": 400})
+        if not from_date or not to_date or not leave_type_id:
+            return Response({"error": "leave_type, from_date, and to_date are required", "status": 400})
 
-        # 1. Employee check
+        # Get logged-in user’s employee object
+        try:
+            current_employee = Employee.objects.get(user=request.user, deleted=False)
+        except Employee.DoesNotExist:
+            return Response({"error": "You are not a valid employee"}, status=403)
+
+        # Default to logged-in employee
+        requested_employee_id = data.get("employee")
+        is_self = not requested_employee_id or str(current_employee.id) == str(requested_employee_id)
+
+        allowed_roles = ["hr", "admin", "manager"]
+        is_authority = any(role in current_employee.role.name.lower() for role in allowed_roles)
+
+        if not is_self and not is_authority:
+            return Response({"error": "Unauthorized to create leave for others"}, status=403)
+
+        employee_id = requested_employee_id or current_employee.id
+        data["employee"] = employee_id  # Force correct employee ID
+
+        # Employee existence check
         try:
             employee = Employee.objects.get(id=employee_id, deleted=False)
         except Employee.DoesNotExist:
             return Response({"error": "Employee not found", "status": 404})
 
-        # 1.5. Leave type check
+        # Leave type check
         try:
             leave_type = LeaveType.objects.get(id=leave_type_id, deleted=False)
         except LeaveType.DoesNotExist:
             return Response({"error": "Leave type not found", "status": 404})
 
-        # 2. Date validation and total days calculation
+        # Date validation and working day count
         try:
             start = datetime.strptime(from_date, "%Y-%m-%d").date()
             end = datetime.strptime(to_date, "%Y-%m-%d").date()
             if end < start:
                 return Response({"error": "to_date cannot be before from_date", "status": 400})
 
-            # Handle weekends
             total_days = sum(1 for i in range((end - start).days + 1)
                              if (start + timedelta(days=i)).weekday() not in WEEKENDS)
 
             if total_days == 0:
                 return Response({"error": "Selected range only includes weekends", "status": 400})
 
-            # Handle half-day logic
             if is_half_day:
                 if total_days > 1:
                     return Response({"error": "Half-day leave can only be for single day", "status": 400})
                 total_days = 0.5
 
             data["total_days"] = total_days
+
         except Exception as e:
             return Response({"error": f"Date error: {str(e)}", "status": 400})
 
-        # 3. Overlapping leave check
+        # Overlapping leave check
         overlap_exists = LeaveRequest.objects.filter(
             employee_id=employee_id,
             deleted=False,
@@ -246,7 +262,7 @@ class CreateLeave(APIView):
         if overlap_exists:
             return Response({"error": "Leave request overlaps with existing request", "status": 400})
 
-        # 4. Check leave balance
+        # Leave balance check
         try:
             balance = LeaveBalance.objects.get(employee_id=employee_id, leave_type_id=leave_type_id)
         except LeaveBalance.DoesNotExist:
@@ -258,15 +274,13 @@ class CreateLeave(APIView):
                 "status": 400
             })
 
-        # 5. Check against max_days_per_year from LeaveType
-        leave_type = LeaveType.objects.get(id=leave_type_id, deleted=False)
+        # Annual leave limit check
         yearly_leaves = LeaveRequest.objects.filter(
             employee_id=employee_id,
             leave_type_id=leave_type_id,
             from_date__year=start.year,
             deleted=False
         )
-
         used_days = sum(l.total_days for l in yearly_leaves)
         if used_days + total_days > leave_type.max_days_per_year:
             return Response({
@@ -274,25 +288,81 @@ class CreateLeave(APIView):
                 "status": 400
             })
 
-        # Save
+        # Force status to "Pending"
+        try:
+            pending_status = LeaveStatus.objects.get(name__iexact="pending", deleted=False)
+        except LeaveStatus.DoesNotExist:
+            pending_status = LeaveStatus.objects.create(name="Pending")
+
+        data["status"] = pending_status.id  # override any incoming status
+
+        # Save leave request
         serializer = LeaveSerializer(data=data)
         if serializer.is_valid():
             leave_request = serializer.save()
-            
-            # Set default status to "Pending" if not provided
-            if not leave_request.status:
-                try:
-                    pending_status = LeaveStatus.objects.get(name__iexact="pending", deleted=False)
-                    leave_request.status = pending_status
-                    leave_request.save()
-                except LeaveStatus.DoesNotExist:
-                    # If "Pending" status doesn't exist, create it
-                    pending_status = LeaveStatus.objects.create(name="Pending")
-                    leave_request.status = pending_status
-                    leave_request.save()
-            
             return Response({"data": serializer.data, "status": 201})
         return Response({"error": serializer.errors, "status": 400})
+
+#! cancel leave request
+class CancelLeaveRequest(APIView):
+    def post(self, request):
+        leave_id = request.data.get("leave_id")
+
+        if not leave_id:
+            return Response({"error": "leave_id is required", "status": 400})
+
+        # Get logged-in employee
+        try:
+            current_employee = Employee.objects.get(user=request.user, deleted=False)
+        except Employee.DoesNotExist:
+            return Response({"error": "You are not a valid employee"}, status=403)
+
+        # Fetch the leave
+        try:
+            leave = LeaveRequest.objects.get(id=leave_id, deleted=False)
+        except LeaveRequest.DoesNotExist:
+            return Response({"error": "Leave request not found"}, status=404)
+
+        # Check permission to cancel
+        allowed_roles = ["admin", "hr", "manager"]
+        is_creator = leave.employee == current_employee
+        is_authority = any(role in current_employee.role.name.lower() for role in allowed_roles)
+
+        if not is_creator and not is_authority:
+            return Response({"error": "You are not authorized to cancel this leave"}, status=403)
+
+        # Only cancel if it's pending or approved
+        if leave.status.name.lower() not in ["pending", "approved"]:
+            return Response({"error": f"Cannot cancel a leave with status '{leave.status.name}'"}, status=400)
+
+        # Revert leave balance if it was approved
+        if leave.status.name.lower() == "approved":
+            try:
+                balance = LeaveBalance.objects.get(employee=leave.employee, leave_type=leave.leave_type, deleted=False)
+                balance.used -= float(leave.total_days or 0)
+                balance.used = max(balance.used, 0)
+                balance.save()
+            except LeaveBalance.DoesNotExist:
+                return Response({"error": "Leave balance not found"}, status=404)
+
+            # Delete logs and attendance
+            LeaveLog.objects.filter(leave_request=leave).delete()
+            Attendence.objects.filter(
+                employee=leave.employee,
+                check_in_date__range=[leave.from_date, leave.to_date],
+                status__name__iexact="on leave"
+            ).delete()
+
+        # Mark leave as "Cancelled"
+        try:
+            cancelled_status = LeaveStatus.objects.get(name__iexact="cancelled", deleted=False)
+        except LeaveStatus.DoesNotExist:
+            cancelled_status = LeaveStatus.objects.create(name="Cancelled")
+
+        leave.status = cancelled_status
+        leave.save()
+
+        return Response({"message": "Leave cancelled successfully", "status": 200})
 
 
 #! leave request approval
@@ -306,7 +376,7 @@ class ApproveLeaveRequest(APIView):
         if not leave_id or not status_id:
             return Response({"error": "leave_id and status_id are required", "status": 400})
 
-        # 1. Get approver from logged-in user
+        # Get approver
         try:
             approver = Employee.objects.get(user=request.user, deleted=False)
         except Employee.DoesNotExist:
@@ -316,29 +386,36 @@ class ApproveLeaveRequest(APIView):
         if not any(role in approver.role.name.lower() for role in allowed_roles):
             return Response({"error": "Unauthorized to approve leaves", "status": 403})
 
-        # 2. Get LeaveRequest
+        # Get LeaveRequest
         try:
             leave_request = LeaveRequest.objects.get(id=leave_id, deleted=False)
         except LeaveRequest.DoesNotExist:
             return Response({"error": "Leave request not found", "status": 404})
+        
 
-        # 3. Prevent duplicate approval
-        if leave_request.status and leave_request.status.name.lower() == "approved":
-            return Response({"error": "This leave request is already approved."}, status=400)
+        # Track previous status
+        previous_status = leave_request.status.name.lower() if leave_request.status else ""
 
-        # 4. Validate new status
+        # Get new status
         try:
             status = LeaveStatus.objects.get(id=status_id, deleted=False)
         except LeaveStatus.DoesNotExist:
             return Response({"error": "Invalid leave status", "status": 400})
 
-        # 5. Update leave request
+        # Prevent re-approval or redundant status change
+        if leave_request.status and leave_request.status.id == status.id:
+            return Response({
+                "message": f"Leave request is already marked as '{status.name}'",
+                "status": 400
+            })
+
+        # Apply new status
         leave_request.status = status
         leave_request.approved_by = approver
         leave_request.remarks_by_superior = remarks
         leave_request.save()
 
-        # 6. If approved, update balance and create logs
+        # ========== APPROVED ==========
         if status.name.lower() == "approved":
             try:
                 balance = LeaveBalance.objects.get(
@@ -349,6 +426,7 @@ class ApproveLeaveRequest(APIView):
                 balance.used += float(leave_request.total_days or 0)
                 balance.save()
 
+                # Create leave logs
                 current_date = leave_request.from_date
                 while current_date <= leave_request.to_date:
                     if current_date.weekday() not in WEEKENDS:
@@ -357,72 +435,96 @@ class ApproveLeaveRequest(APIView):
                             leave_type=leave_request.leave_type,
                             date=current_date,
                             leave_request=leave_request,
-                            defaults={
-                                "is_half_day": leave_request.is_half_day
-                            }
+                            defaults={"is_half_day": leave_request.is_half_day}
                         )
                     current_date += timedelta(days=1)
 
-                # LeaveSummaryLog.objects.get_or_create(
-                #     employee=leave_request.employee,
-                #     leave_type=leave_request.leave_type,
-                #     from_date=leave_request.from_date,
-                #     to_date=leave_request.to_date,
-                #     leave_request=leave_request,
-                #     defaults={
-                #         "is_half_day": leave_request.is_half_day
-                #     }
-                # )
-
             except LeaveBalance.DoesNotExist:
                 return Response({"error": "Leave balance not found", "status": 404})
-            
-        # Get or create "On Leave" status
-        try:
-            on_leave_status = AttendenceStatus.objects.get(name__iexact="on leave", deleted=False)
-        except AttendenceStatus.DoesNotExist:
-            on_leave_status = AttendenceStatus.objects.create(name="On Leave", acronym="OL")
 
-        # Auto-create attendance for leave days
-        current_date = leave_request.from_date
-        while current_date <= leave_request.to_date:
-            if current_date.weekday() not in WEEKENDS:
-                # 1. Leave log (already exists)
-                LeaveLog.objects.get_or_create(
+            # Create attendance entries for approved leave
+            try:
+                on_leave_status = AttendenceStatus.objects.get(name__iexact="on leave", deleted=False)
+            except AttendenceStatus.DoesNotExist:
+                on_leave_status = AttendenceStatus.objects.create(name="On Leave", acronym="OL")
+
+            current_date = leave_request.from_date
+            while current_date <= leave_request.to_date:
+                if current_date.weekday() not in WEEKENDS:
+                    Attendence.objects.get_or_create(
+                        employee=leave_request.employee,
+                        check_in_date=current_date,
+                        defaults={
+                            "status": on_leave_status,
+                            "remarks": "Auto-marked as on leave",
+                            "total_working_hour": "00:00"
+                        }
+                    )
+                current_date += timedelta(days=1)
+
+        # ========== REJECTED or CANCELLED ==========
+        elif status.name.lower() in ["rejected", "cancelled"] and previous_status == "approved":
+            try:
+                balance = LeaveBalance.objects.get(
                     employee=leave_request.employee,
                     leave_type=leave_request.leave_type,
-                    date=current_date,
-                    leave_request=leave_request,
-                    defaults={
-                        "is_half_day": leave_request.is_half_day,
-                        "status": status,
-                        "approved_by": approver,
-                        "remarks": remarks
-                    }
+                    deleted=False
                 )
+                balance.used -= float(leave_request.total_days or 0)
+                balance.used = max(balance.used, 0)
+                balance.save()
+            except LeaveBalance.DoesNotExist:
+                return Response({"error": "Leave balance not found", "status": 404})
 
-                # 2. Attendance log
-                Attendence.objects.get_or_create(
-                    employee=leave_request.employee,
-                    check_in_date=current_date,
-                    defaults={
-                        "status": on_leave_status,
-                        "remarks": "Auto-marked as on leave",
-                        "total_working_hour": "00:00"
-                    }
-                )
-            current_date += timedelta(days=1)
+            # Clean up logs and attendance
+            LeaveLog.objects.filter(leave_request=leave_request).delete()
+            Attendence.objects.filter(
+                employee=leave_request.employee,
+                check_in_date__range=[leave_request.from_date, leave_request.to_date],
+                status__name__iexact="on leave"
+            ).delete()
 
-        # 7. Response
+        # Skip attendance/log creation for rejected/cancelled
+        if status.name.lower() not in ["rejected", "cancelled"]:
+            try:
+                on_leave_status = AttendenceStatus.objects.get(name__iexact="on leave", deleted=False)
+            except AttendenceStatus.DoesNotExist:
+                on_leave_status = AttendenceStatus.objects.create(name="On Leave", acronym="OL")
+
+            current_date = leave_request.from_date
+            while current_date <= leave_request.to_date:
+                if current_date.weekday() not in WEEKENDS:
+                    LeaveLog.objects.get_or_create(
+                        employee=leave_request.employee,
+                        leave_type=leave_request.leave_type,
+                        date=current_date,
+                        leave_request=leave_request,
+                        defaults={
+                            "is_half_day": leave_request.is_half_day,
+                            "status": status,
+                            "approved_by": approver,
+                            "remarks": remarks
+                        }
+                    )
+
+                    Attendence.objects.get_or_create(
+                        employee=leave_request.employee,
+                        check_in_date=current_date,
+                        defaults={
+                            "status": on_leave_status,
+                            "remarks": "Auto-marked as on leave",
+                            "total_working_hour": "00:00"
+                        }
+                    )
+                current_date += timedelta(days=1)
+
+        # Final response
         serializer = LeaveRequestSerializer(leave_request)
         return Response({
             "data": serializer.data,
             "message": f"Leave request updated to '{status.name}' successfully",
             "status": 200
         })
-
-
-
 
 
 # get leave request
@@ -479,7 +581,7 @@ class GetAllLeaveRequestsAdmin(APIView):
             return Response({"error": "Employee not found", "status": 404})
 
         # Only allow roles like "HR", "Admin", "Manager" to see all
-        if employee.role.name.lower() not in ["hr", "admin", "manager"]:
+        if employee.role.name.lower() not in ["hr", "admin", "manager"]:    
             return Response({"error": "Unauthorized", "status": 403})
 
         leaves = LeaveRequest.objects.filter(deleted=False)
@@ -491,12 +593,8 @@ class GetAllLeaveRequestsAdmin(APIView):
 
 class GetLeaveRequestDetail(APIView):
     def get(self, request, id):
-        employee_id = request.GET.get("employee_id")
-        if not employee_id:
-            return Response({"error": "employee_id is required", "status": 400})
-
         try:
-            employee = Employee.objects.get(id=employee_id, deleted=False)
+            employee = Employee.objects.get(user=request.user, deleted=False)
         except Employee.DoesNotExist:
             return Response({"error": "Employee not found", "status": 404})
 
@@ -510,6 +608,7 @@ class GetLeaveRequestDetail(APIView):
 
         serializer = LeaveRequestSerializer(leave)
         return Response({"data": serializer.data, "status": 200})
+
 
 
 

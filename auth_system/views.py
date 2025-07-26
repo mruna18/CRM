@@ -17,6 +17,11 @@ from api.models import *
 from attendence.models import *
 from django.utils.timezone import now as tz_now
 from django.utils import timezone
+from attendence.utils import update_attendance_summary
+import re
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError
+from django.conf import settings
 
 
 class CustomTokenAuthentication(BaseAuthentication):
@@ -41,24 +46,186 @@ class CustomTokenAuthentication(BaseAuthentication):
 
         return (user, token)
 
+
 class AllowAnyView(APIView):
     permission_classes = (AllowAny,)
     authentication_classes = []
+
+
+def validate_password_strength(password):
+    """Validate password strength"""
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters long"
+    
+    if not re.search(r'[A-Z]', password):
+        return False, "Password must contain at least one uppercase letter"
+    
+    if not re.search(r'[a-z]', password):
+        return False, "Password must contain at least one lowercase letter"
+    
+    if not re.search(r'\d', password):
+        return False, "Password must contain at least one digit"
+    
+    return True, "Password is strong"
+
+
+def validate_mobile_number(mobile):
+    """Validate mobile number format"""
+    if not re.match(r'^\+?1?\d{9,15}$', str(mobile)):
+        return False, "Invalid mobile number format"
+    return True, "Valid mobile number"
+
+
+def handle_attendance_checkin(user):
+    """Handle attendance check-in logic"""
+    try:
+        employee = Employee.objects.get(user=user, deleted=False)
+        today = date.today()
+        now = timezone.now()
+        status = AttendenceStatus.objects.get(name__iexact="present", deleted=False)
+        local_now = timezone.localtime(now)
+
+        attendence, created = Attendence.objects.get_or_create(
+            employee=employee,
+            check_in_date=today,
+            defaults={
+                "check_in": local_now.time(),
+                "status": status
+            }
+        )
+
+        if not created and not attendence.check_in:
+            attendence.check_in = local_now.time() 
+            attendence.status = status
+            attendence.save()
+
+        # Close any previously open session
+        last_session = AttendenceSession.objects.filter(
+            attendence=attendence,
+            logout_time__isnull=True
+        ).order_by('-login_time').first()
+
+        if last_session:
+            last_session.logout_time = now
+            last_session.save()
+
+        # Create new session
+        AttendenceSession.objects.create(
+            attendence=attendence,
+            login_time=now
+        )
+
+        update_attendance_summary(attendence)
+        return True, "Attendance check-in successful"
+        
+    except Employee.DoesNotExist:
+        return False, "Employee not found"
+    except AttendenceStatus.DoesNotExist:
+        return False, "Attendance status not configured"
+    except Exception as ex:
+        return False, f"Attendance error: {str(ex)}"
+
+
+def handle_attendance_checkout(user):
+    """Handle attendance check-out logic"""
+    try:
+        employee = Employee.objects.get(user=user, deleted=False)
+        today = date.today()
+        now = timezone.now()
+
+        attendence = Attendence.objects.filter(
+            employee=employee,
+            check_in_date=today,
+            deleted=False
+        ).first()
+
+        if attendence:
+            # Find the latest session that's still open
+            open_session = AttendenceSession.objects.filter(
+                attendence=attendence,
+                logout_time__isnull=True,
+                deleted=False
+            ).order_by('-login_time').first()
+
+            if open_session:
+                open_session.logout_time = now
+                open_session.save()
+
+            update_attendance_summary(attendence)
+
+            # Recalculate total working hours
+            all_sessions = AttendenceSession.objects.filter(
+                attendence=attendence,
+                login_time__isnull=False,
+                logout_time__isnull=False,
+                deleted=False
+            )
+
+            if all_sessions.exists():
+                total_seconds = sum(
+                    (s.logout_time - s.login_time).total_seconds()
+                    for s in all_sessions
+                )
+
+                hours = int(total_seconds // 3600)
+                minutes = int((total_seconds % 3600) // 60)
+
+                attendence.total_working_hour = f"{hours:02d}:{minutes:02d}"
+
+                last_session = all_sessions.order_by('-logout_time').first()
+                logout_dt = timezone.localtime(last_session.logout_time)
+                attendence.check_out = logout_dt.time()
+                attendence.check_out_date = logout_dt.date()
+                attendence.save()
+
+        return True, "Attendance check-out successful"
+        
+    except Employee.DoesNotExist:
+        return False, "Employee not found"
+    except Exception as ex:
+        return False, f"Attendance error: {str(ex)}"
+
 
 class RegisterView(AllowAnyView):
     def post(self, request):
         try:
             data = request.data
 
+            # Validate required fields
+            required_fields = ['username', 'email', 'password', 'confirm_password', 'first_name', 'last_name']
+            for field in required_fields:
+                if not data.get(field):
+                    return Response({"error": f"{field} is required.", "status": 400}, status=400)
+
+            # Validate password match
             if data.get('password') != data.get('confirm_password'):
                 return Response({"error": "Passwords do not match.", "status": 400}, status=400)
 
+            # Validate password strength
+            is_strong, password_msg = validate_password_strength(data.get('password'))
+            if not is_strong:
+                return Response({"error": password_msg, "status": 400}, status=400)
+
+            # Validate email format
+            try:
+                validate_email(data.get('email'))
+            except ValidationError:
+                return Response({"error": "Invalid email format.", "status": 400}, status=400)
+
+            # Validate mobile number if provided
+            if data.get('username'):
+                is_valid_mobile, mobile_msg = validate_mobile_number(data.get('username'))
+                if not is_valid_mobile:
+                    return Response({"error": mobile_msg, "status": 400}, status=400)
+
+            # Check existing users
             if User.objects.filter(username=data.get('username')).exists():
                 return Response({"error": "Username already exists.", "status": 400}, status=400)
 
             if User.objects.filter(email=data.get('email')).exists():
                 return Response({"error": "Email already exists.", "status": 400}, status=400)
 
+            # Create user
             serializer = UserRegistrationSerializer(data=data)
             if serializer.is_valid():
                 user = serializer.save()
@@ -84,27 +251,33 @@ class RegisterView(AllowAnyView):
                     "message": "User registered successfully"
                 }, status=200)
 
+                # Set secure cookie based on environment
+                is_secure = not settings.DEBUG  # Only secure in production
                 response.set_cookie(
                     key='refreshToken',
                     value=str(refresh),
                     httponly=True,
-                    secure=True,
-                    samesite='None'
+                    secure=is_secure,
+                    samesite='Lax' if not is_secure else 'None'
                 )
                 return response
 
-            return Response({"data": serializer.errors, "status": 400}, status=400)
+            return Response({"error": serializer.errors, "status": 400}, status=400)
 
         except Exception as e:
             return Response({
-                "data": f"An error occurred during registration: {str(e)}",
+                "error": f"Registration failed: {str(e)}",
                 "status": 500
             }, status=500)
+
 
 class CustomTokenRefreshView(TokenRefreshView):
     def post(self, request):
         try:
             refresh_token = request.COOKIES.get('refreshToken')
+            if not refresh_token:
+                return Response({"error": "Refresh token not found", "status": 401}, status=401)
+                
             access_token = RefreshToken(refresh_token).access_token
 
             response = Response()
@@ -113,15 +286,15 @@ class CustomTokenRefreshView(TokenRefreshView):
                 "status": 200
             }
             return response
-        except:
+        except Exception as e:
             response = Response(status=401)
-            response.delete_cookie('refreshToken', path='/', domain='your-domain.com')
+            response.delete_cookie('refreshToken', path='/')
             response.data = {
-                "data": "Your session has expired. Please log in again.",
-                "status": 500
+                "error": "Session expired. Please log in again.",
+                "status": 401
             }
             return response
-        
+
 
 User = get_user_model()
 
@@ -134,14 +307,24 @@ class LoginView(APIView):
         password = request.data.get('password')
 
         if not email or not password:
-            return Response({'data': "Email and password are required.", "status": 400}, status=400)
+            return Response({'error': "Email and password are required.", "status": 400}, status=400)
 
         try:
+            # Validate email format
+            try:
+                validate_email(email)
+            except ValidationError:
+                return Response({'error': "Invalid email format.", "status": 400}, status=400)
+
             user_obj = User.objects.get(email=email)
             user = authenticate(username=user_obj.username, password=password)
 
             if user is None:
-                return Response({'data': "Invalid credentials.", "status": 401}, status=401)
+                return Response({'error': "Invalid credentials.", "status": 401}, status=401)
+
+            # Check if user is active
+            if not user.is_active:
+                return Response({'error': "Account is deactivated.", "status": 401}, status=401)
 
             refresh = RefreshToken.for_user(user)
             mobile = user.username if not user.username.isdigit() else int(user.username)
@@ -154,68 +337,38 @@ class LoginView(APIView):
                 "mobile": mobile,
             }
 
-            # === Attendance Check-in and Session ===
-            try:
-                employee = Employee.objects.get(user=user, deleted=False)
-                today = date.today()
-                now = timezone.now()
-                status = AttendenceStatus.objects.get(name__iexact="present", deleted=False)
+            # Handle attendance check-in
+            attendance_success, attendance_msg = handle_attendance_checkin(user)
+            if not attendance_success:
+                print(f"⚠️ Attendance check-in failed: {attendance_msg}")
 
-                attendence, created = Attendence.objects.get_or_create(
-                    employee=employee,
-                    check_in_date=today,
-                    defaults={
-                        "check_in": now.time(),
-                        "status": status
-                    }
-                )
-
-                if not created and not attendence.check_in:
-                    attendence.check_in = now.time()
-                    attendence.status = status
-                    attendence.save()
-
-                # Close any previously open session
-                last_session = AttendenceSession.objects.filter(
-                    attendence=attendence,
-                    logout_time__isnull=True
-                ).order_by('-login_time').first()
-
-                if last_session:
-                    last_session.logout_time = now
-                    last_session.save()
-
-                # Create new session
-                AttendenceSession.objects.create(
-                    attendence=attendence,
-                    login_time=now
-                )
-
-            except Exception as ex:
-                print("⚠️ Attendance/session error on login:", ex)
-
-            # === Response ===
+            # Response
             response = Response({
                 "token": str(refresh.access_token),
                 "user": [user_data],
-                "status": 200
+                "status": 200,
+                "message": "Login successful"
             })
 
+            # Set secure cookie based on environment
+            is_secure = not settings.DEBUG  # Only secure in production
             response.set_cookie(
                 key='refreshToken',
                 value=str(refresh),
                 httponly=True,
-                secure=True,
-                samesite='None'
+                secure=is_secure,
+                samesite='Lax' if not is_secure else 'None'
             )
 
             return response
 
+        except User.DoesNotExist:
+            return Response({'error': "User not found.", "status": 404}, status=404)
         except Exception as e:
             return Response({
-                'data': f"An error occurred during login: {str(e)}",
+                'error': f"Login failed: {str(e)}",
                 "status": 500
-            })
+            }, status=500)
 
 
 class LogoutView(APIView):
@@ -223,77 +376,35 @@ class LogoutView(APIView):
         try:
             auth_header = request.headers.get('Authorization')
             if not auth_header or 'Bearer ' not in auth_header:
-                return Response({"data": "Invalid token format.", "status": 401})
+                return Response({"error": "Invalid token format.", "status": 401}, status=401)
 
             token = auth_header.split('Bearer ')[1]
             access_token = AccessToken(token)
             user_id = access_token['user_id']
 
+            # Check if already blacklisted
             if BlacklistToken.objects.filter(token=token).exists():
-                return Response({"data": "Already logged out.", "status": 403})
+                return Response({"error": "Already logged out.", "status": 403}, status=403)
 
-            # Get employee
-            employee = Employee.objects.get(user_id=user_id, deleted=False)
-            today = date.today()
-            now = timezone.now()
+            # Handle attendance check-out
+            try:
+                user = User.objects.get(id=user_id)
+                attendance_success, attendance_msg = handle_attendance_checkout(user)
+                if not attendance_success:
+                    print(f"⚠️ Attendance check-out failed: {attendance_msg}")
+            except User.DoesNotExist:
+                print("⚠️ User not found for attendance check-out")
 
-            # Get today's attendance
-            attendence = Attendence.objects.filter(
-                employee=employee,
-                check_in_date=today,
-                deleted=False
-            ).first()
-
-            if attendence:
-                # Find the latest session that's still open
-                open_session = AttendenceSession.objects.filter(
-                    attendence=attendence,
-                    logout_time__isnull=True,
-                    deleted=False
-                ).order_by('-login_time').first()
-
-                if open_session:
-                    open_session.logout_time = now
-                    open_session.save()
-
-                # 🧠 Recalculate total working hours from all sessions
-                all_sessions = AttendenceSession.objects.filter(
-                    attendence=attendence,
-                    login_time__isnull=False,
-                    logout_time__isnull=False,
-                    deleted=False
-                )
-
-                total_seconds = sum(
-                    (s.logout_time - s.login_time).total_seconds()
-                    for s in all_sessions
-                )
-
-                hours = int(total_seconds // 3600)
-                minutes = int((total_seconds % 3600) // 60)
-
-                attendence.total_working_hour = f"{hours:02d}:{minutes:02d}"
-
-                # 🕓 Update check_out and check_out_date using last session
-                last_session = all_sessions.order_by('-logout_time').first()
-                if last_session:
-                    attendence.check_out = last_session.logout_time.time()
-                    attendence.check_out_date = last_session.logout_time.date()
-
-                attendence.save()
-            else:
-                print("⚠️ No attendance found for today")
-
-            # 🔒 Blacklist token
+            # Blacklist token
             BlacklistToken.objects.create(token=token)
 
-            response = Response()
-            response.delete_cookie('refreshToken', path='/', domain='your-domain.com')
-            response.data = {"data": "User logout successfully.", "status": 200}
+            response = Response({"message": "Logout successful.", "status": 200})
+            response.delete_cookie('refreshToken', path='/')
             return response
 
         except Exception as e:
             return Response({
-                "data": f"Something went wrong during logout: {str(e)}",
+                "error": f"Logout failed: {str(e)}",
                 "status": 500
-            })
+            }, status=500)
+

@@ -18,7 +18,7 @@ class AttendanceAdmin(admin.ModelAdmin):
         'check_out_date',
         'check_out',
         'status',
-        'total_working_hour',
+        'total_working_hour','overtime_minutes',
         'deleted',
     )
     search_fields = ('employee__first_name', 'employee__last_name', 'employee__email')
